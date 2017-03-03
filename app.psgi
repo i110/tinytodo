@@ -7,69 +7,62 @@ use lib File::Spec->catdir(dirname(__FILE__), 'extlib', 'lib', 'perl5');
 use lib File::Spec->catdir(dirname(__FILE__), 'lib');
 use Amon2::Lite;
 
+use JSON;
+
 our $VERSION = '0.13';
 
-# put your configuration here
+# FIXME
+use Data::Dumper;
+use feature qw/say/;
+
+my $dbname = 'tinytodo';
 sub load_config {
-    my $c = shift;
-
-    my $mode = $c->mode_name || 'development';
-
     +{
-        'DBI' => [
-            "dbi:SQLite:dbname=$mode.db",
-            '',
-            '',
-        ],
+        'DBI' => [ "dbi:SQLite:dbname=$dbname.db", '', '' ],
     }
 }
 
 get '/' => sub {
     my $c = shift;
-    return $c->render('index.tt');
+    my $dbh = $c->dbh;
+    my $rows = $dbh->selectall_arrayref('SELECT * FROM items', {Slice => {}});
+    $_->{done} = _to_bool($_->{done}) for @$rows;
+    $c->render_json($rows);
 };
 
-# load plugins
-__PACKAGE__->load_plugin('Web::CSRFDefender' => {
-    post_only => 1,
-});
-# __PACKAGE__->load_plugin('DBI');
-# __PACKAGE__->load_plugin('Web::FillInFormLite');
-# __PACKAGE__->load_plugin('Web::JSON');
+get '/:id' => sub {
+    my ($c, $p) = @_;
+    my $row = $c->dbh->selectrow_hashref('SELECT * FROM items WHERE id = ?', undef, $p->{id})
+        or return $c->res_404;
+    $row->{done} = _to_bool($row->{done});
+    $c->render_json($row);
+};
 
-__PACKAGE__->enable_session();
+post '/' => sub {
+    my $c = shift;
+    my $item = decode_json($c->req->content);
+    $c->dbh->do('INSERT INTO items (text) VALUES (?)', undef, $item->{text});
+    my $id = $c->dbh->last_insert_id($dbname, $dbname, 'items', 'id');
+    my $res = $c->render_json(+{
+        id => $id,
+        text => $item->{text},
+        done => JSON::false,
+    });
+    $res->header('Location' => '/' . $id);
+    $res;
+};
 
-__PACKAGE__->to_app(handle_static => 1);
+any [qw/delete/], '/:id' => sub {
+    my ($c, $p) = @_;
+    $c->dbh->do('DELETE FROM items WHERE id = ?', undef, $p->{id})
+        or return $c->res_404;
+    $c->create_response(204)
+};
 
-__DATA__
+sub _to_bool { shift ? JSON::true : JSON::false }
 
-@@ index.tt
-<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>TinyTodo</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
-    <script type="text/javascript" src="[% uri_for('/static/js/main.js') %]"></script>
-    <link href="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/css/bootstrap-combined.min.css" rel="stylesheet">
-    <script src="//netdna.bootstrapcdn.com/twitter-bootstrap/2.3.1/js/bootstrap.min.js"></script>
-    <link rel="stylesheet" href="[% uri_for('/static/css/main.css') %]">
-</head>
-<body>
-    <div class="container">
-        <header><h1>TinyTodo</h1></header>
-        <section class="row">
-            This is a TinyTodo
-        </section>
-        <footer>Powered by <a href="http://amon.64p.org/">Amon2::Lite</a></footer>
-    </div>
-</body>
-</html>
+__PACKAGE__->load_plugin('DBI');
+__PACKAGE__->load_plugin('Web::JSON');
 
-@@ /static/js/main.js
+__PACKAGE__->to_app;
 
-@@ /static/css/main.css
-footer {
-    text-align: right;
-}
